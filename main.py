@@ -2,12 +2,19 @@ import os
 import json
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query
+from pydantic import ConfigDict
 from pydantic_settings import BaseSettings
 import aiofiles
 import httpx
 
 class Settings(BaseSettings):
     """Configuration loaded from environment variables"""
+    model_config = ConfigDict(
+        env_file=".env",
+        extra="ignore",
+        protected_namespaces=()
+    )
+
     app_name: str = "Symbiota OCR Middleware"
     display_name: str = "OCR Service"
     model_name: str = "Default Model"
@@ -17,9 +24,6 @@ class Settings(BaseSettings):
     port: int = 8000
     model_path: str = "/app/models"
     azure_route: str = ""
-
-    class Config:
-        env_file = ".env"
 
 settings = Settings()
 app = FastAPI(title=settings.app_name)
@@ -102,10 +106,10 @@ async def evaluate_with_model(model_name: str, url: str = Query(...)):
     """Evaluate with a specific model (future implementation)"""
     if model_name not in available_models:
         raise HTTPException(
-            status_code=404, 
+            status_code=404,
             detail=f"Model '{model_name}' not found. Available models: {list(available_models.keys())}"
         )
-    
+
     # Placeholder for actual model inference
     # This will be implemented when models are added to /app/models
     raise HTTPException(status_code=501, detail="Model inference not yet implemented")
