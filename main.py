@@ -7,6 +7,8 @@ from pydantic_settings import BaseSettings
 import aiofiles
 import httpx
 
+from confidence import to_envelope, synthesize_confidence
+
 class Settings(BaseSettings):
     """Configuration loaded from environment variables"""
     model_config = ConfigDict(
@@ -84,7 +86,12 @@ async def output(id: int, url: str = Query(...)):
         contents = await f.read()
         data = json.loads(contents)
 
-    return data
+    # Synthesize a plausible per-field confidence map so the front-end can be
+    # developed against realistic data, then return the standard envelope.
+    if isinstance(data, dict) and "_confidence" not in data:
+        data = dict(data)
+        data["_confidence"] = synthesize_confidence(data)
+    return to_envelope(data, model="mock")
 
 @app.post("/evaluate/azure")
 async def evaluate(url: str = Query(...)):
@@ -100,7 +107,7 @@ async def evaluate(url: str = Query(...)):
     if response.status_code != 200:
         raise HTTPException(status_code=response.status_code, detail="OCR service returned an error")
 
-    return response.json()
+    return to_envelope(response.json(), model="azure")
 @app.post("/evaluate/{model_name}")
 async def evaluate_with_model(model_name: str, url: str = Query(...)):
     """Evaluate with a specific model (future implementation)"""

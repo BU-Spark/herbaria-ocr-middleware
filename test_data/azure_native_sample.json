@@ -1,0 +1,38 @@
+{
+  "status": "succeeded",
+  "analyzeResult": {
+    "apiVersion": "2023-07-31",
+    "modelId": "herbaria-dwc",
+    "documents": [
+      {
+        "docType": "herbaria-dwc",
+        "fields": {
+          "scientificName": {
+            "type": "string",
+            "valueString": "Acer rubrum",
+            "content": "Acer rubrum",
+            "confidence": 0.92
+          },
+          "recordedBy": {
+            "type": "string",
+            "valueString": "J. Smith",
+            "content": "J. Smith",
+            "confidence": 0.71
+          },
+          "eventDate": {
+            "type": "string",
+            "valueString": "1899-07-04",
+            "content": "1899-07-04",
+            "confidence": 0.5
+          },
+          "locality": {
+            "type": "string",
+            "valueString": "Bank of the Charles River",
+            "content": "Bank of the Charles River"
+          }
+        },
+        "confidence": 0.88
+      }
+    ]
+  }
+}
