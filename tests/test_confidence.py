@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from confidence import (  # noqa: E402
     SCHEMA_VERSION,
+    _extract_field_value,
     synthesize_confidence,
     to_envelope,
 )
@@ -122,7 +123,54 @@ def test_azure_values_preserved_from_fixture():
     env = to_envelope(raw, model="azure")
     fields = raw["analyzeResult"]["documents"][0]["fields"]
     for name, field in fields.items():
-        assert env[name] == field["valueString"]
+        # Derive the expected value the same way production does, rather than
+        # hardcoding `valueString` (a field may use valueNumber/valueDate/etc.).
+        expected = _extract_field_value(field)
+        expected = "" if expected is None else expected
+        assert env[name] == expected
+
+
+def test_azure_multiple_documents_all_fields_kept():
+    # A multi-page sheet can yield >1 document; no field should be dropped.
+    raw = {
+        "analyzeResult": {
+            "documents": [
+                {"fields": {"scientificName": {"valueString": "Acer rubrum", "confidence": 0.9}}},
+                {"fields": {
+                    "locality": {"valueString": "Charles River", "confidence": 0.8},
+                    # collision: a later document must NOT overwrite the first.
+                    "scientificName": {"valueString": "WRONG", "confidence": 0.1},
+                }},
+            ]
+        }
+    }
+    env = to_envelope(raw, model="azure")
+    assert env["scientificName"] == "Acer rubrum"        # first-wins
+    assert env["locality"] == "Charles River"            # second doc kept
+    assert env["_confidence"]["scientificName"] == 0.9
+    assert env["_confidence"]["locality"] == 0.8
+
+
+def test_meta_passthrough_strips_unknown_keys():
+    # An incoming envelope's _meta must not leak arbitrary keys into output.
+    raw = {
+        "scientificName": "X",
+        "_confidence": {"scientificName": 0.5},
+        "_meta": {"model": "azure", "schema_version": SCHEMA_VERSION, "injected": "<script>"},
+    }
+    env = to_envelope(raw, model="mock")
+    assert set(env["_meta"].keys()) == {"model", "schema_version"}
+    assert "injected" not in env["_meta"]
+
+
+def test_reserved_key_collision_is_neutralized():
+    # A flat input literally carrying _confidence/_meta as non-map values must
+    # not poison the envelope: they're rebuilt, not passed through.
+    raw = {"scientificName": "X", "_confidence": "malicious", "_meta": "bad"}
+    env = to_envelope(raw, model="mock")
+    assert env["scientificName"] == "X"
+    assert env["_confidence"] == {}
+    assert set(env["_meta"].keys()) == {"model", "schema_version"}
 
 
 # --- Clamping ---------------------------------------------------------------

@@ -95,14 +95,17 @@ async def output(id: int, url: str = Query(...)):
 
 @app.post("/evaluate/azure")
 async def evaluate(url: str = Query(...)):
-    target_url = f"{settings.azure_route}?url={url}"
-    print("Target url:", target_url)
-    # Ascync calls ocr service
+    # Pass the image URL as a properly-encoded query param. Never string-concat
+    # `?url=` onto azure_route: the route may itself carry query params (e.g. an
+    # API key), and a raw caller-supplied url could smuggle extra params.
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post(target_url)
+            response = await client.post(settings.azure_route, params={"url": url})
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error calling OCR service: {str(e)}")
+        # Log server-side only; the exception text can embed the upstream URL
+        # (which may contain a key), so never return it to the caller.
+        print(f"Error calling OCR service: {e}")
+        raise HTTPException(status_code=502, detail="Upstream OCR service unavailable")
 
     if response.status_code != 200:
         raise HTTPException(status_code=response.status_code, detail="OCR service returned an error")

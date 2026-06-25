@@ -61,24 +61,36 @@ def _extract_field_value(field: Any) -> Any:
 
 
 def _from_azure_native(raw: dict, model: str) -> dict:
-    """Build the envelope from Azure Document Intelligence native output."""
+    """Build the envelope from Azure Document Intelligence native output.
+
+    Iterates ALL documents (a multi-page herbarium sheet can yield more than
+    one), not just ``documents[0]``, so no field is silently dropped. On a field
+    name appearing in multiple documents, the first occurrence wins (we do not
+    overwrite an already-seen value), matching "first document is primary".
+    """
     documents = raw["analyzeResult"]["documents"]
-    fields = {}
-    if isinstance(documents, list) and documents:
-        first = documents[0]
-        if isinstance(first, dict):
-            fields = first.get("fields") or {}
-    if not isinstance(fields, dict):
-        fields = {}
+    if not isinstance(documents, list):
+        documents = []
 
     flat: dict = {}
     confidence: dict = {}
-    for name, field in fields.items():
-        flat[name] = _extract_field_value(field)
-        if isinstance(field, dict):
-            score = _clamp_confidence(field.get("confidence"))
-            if score is not None:
-                confidence[name] = score
+    for doc in documents:
+        if not isinstance(doc, dict):
+            continue
+        fields = doc.get("fields")
+        if not isinstance(fields, dict):
+            continue
+        for name, field in fields.items():
+            if name in flat:
+                continue  # first-wins: don't let a later document overwrite
+            value = _extract_field_value(field)
+            # Coerce a present-but-empty field to "" so the Azure path matches
+            # the flat path's behavior (consumers test `value == ""`).
+            flat[name] = "" if value is None else value
+            if isinstance(field, dict):
+                score = _clamp_confidence(field.get("confidence"))
+                if score is not None:
+                    confidence[name] = score
 
     flat["_confidence"] = confidence
     flat["_meta"] = {"model": model, "schema_version": SCHEMA_VERSION}
@@ -102,14 +114,14 @@ def _from_envelope(raw: dict, model: str) -> dict:
                 clean_conf[name] = clamped
     out["_confidence"] = clean_conf
 
-    meta = raw.get("_meta")
-    if not isinstance(meta, dict):
-        meta = {}
-    else:
-        meta = dict(meta)
-    meta.setdefault("model", model)
-    meta.setdefault("schema_version", SCHEMA_VERSION)
-    out["_meta"] = meta
+    # Rebuild _meta from only the known keys so arbitrary/adversarial keys in an
+    # incoming envelope's _meta never pass through into our output.
+    raw_meta = raw.get("_meta")
+    raw_meta = raw_meta if isinstance(raw_meta, dict) else {}
+    out["_meta"] = {
+        "model": raw_meta.get("model", model),
+        "schema_version": raw_meta.get("schema_version", SCHEMA_VERSION),
+    }
     return out
 
 
