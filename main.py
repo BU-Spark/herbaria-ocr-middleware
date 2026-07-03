@@ -99,7 +99,7 @@ async def evaluate(url: str = Query(...)):
     # `?url=` onto azure_route: the route may itself carry query params (e.g. an
     # API key), and a raw caller-supplied url could smuggle extra params.
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:  # ponytail: 30s covers typical DI analyze latency; raise if models get slower
             response = await client.post(settings.azure_route, params={"url": url})
     except Exception as e:
         # Log server-side only; the exception text can embed the upstream URL
