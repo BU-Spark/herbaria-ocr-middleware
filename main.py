@@ -110,7 +110,12 @@ async def evaluate(url: str = Query(...)):
     if response.status_code != 200:
         raise HTTPException(status_code=response.status_code, detail="OCR service returned an error")
 
-    return to_envelope(response.json(), model="azure")
+    try:
+        payload = response.json()
+    except ValueError:
+        # 200 with an empty/truncated body (proxy hiccup) — don't leak a 500.
+        raise HTTPException(status_code=502, detail="OCR service returned a malformed response")
+    return to_envelope(payload, model="azure")
 @app.post("/evaluate/{model_name}")
 async def evaluate_with_model(model_name: str, url: str = Query(...)):
     """Evaluate with a specific model (future implementation)"""
