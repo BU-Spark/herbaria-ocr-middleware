@@ -1,0 +1,14 @@
+# Secrets / local config — NEVER commit (holds Azure key + endpoint)
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+.DS_Store

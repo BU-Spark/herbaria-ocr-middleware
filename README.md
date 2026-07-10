@@ -11,6 +11,28 @@ This service acts as a unified interface for OCR operations:
 
 Models are discovered dynamically at startup from the mounted models directory, making it easy to add/update models without restarting.
 
+### Integration with the Symbiota app
+
+This middleware does not run in isolation — the main Symbiota web container calls
+it over the shared Docker network. The Symbiota PHP integration
+(`collections/quickentry/rpc/externalocr.php`) reaches the service at the
+hardcoded URL `http://ocr_middleware:8000/...`.
+
+> **Hostname note (service name).** The canonical service hostname is the
+> **underscore** form `ocr_middleware` (port 8000) — used by the compose service
+> name, the hardcoded PHP URL in `externalocr.php`, and now also by the main stack's
+> `containers/.env.example` (`OCR_HOST=ocr_middleware`). Earlier the `.env.example`
+> shipped a hyphenated `ocr-middleware` that would not resolve on the Docker network;
+> that is fixed (finding C3). Always use the underscore form.
+
+Because `externalocr.php` resolves the service by its container hostname rather
+than via the published `8000:8000` port mapping, the web container must be on the
+**same Docker network** as this service. The compose file places this service on
+the external `symbiota-network`; the web container must also be attached to that
+network so it can reach `http://ocr_middleware:8000/`. See the main containers
+spine doc (`se-symbiota/containers/README.md`) for how the full stack is wired
+together, including bridging this service onto the app's network.
+
 ## API Documentation
 
 FastAPI interactive docs are accessible at `http://localhost:8000/docs` by default.
@@ -46,6 +68,10 @@ Configuration is managed via environment variables loaded from `.env` file. The 
    cp .env.example .env
    ```
 
+   > This `.env` (at the `herbaria-ocr-middleware` repo root) configures the **Python
+   > OCR service only**. It is a *separate file* from `se-symbiota/containers/.env`,
+   > which configures the PHP/DB stack — don't confuse the two.
+
 2. Edit `.env` with your settings:
    ```env
    APP_NAME=My OCR Service
@@ -53,10 +79,28 @@ Configuration is managed via environment variables loaded from `.env` file. The 
    AZURE_ROUTE=https://your-azure-endpoint.com/ocr
    ```
 
-3. Run with Docker Compose:
+3. Create the shared Docker network, then run Docker Compose:
+
+   The compose file (`docker/docker-compose.yaml`) attaches this service to an
+   **external** network named `symbiota-network`, so that network must already
+   exist before you start the service. Create it once:
    ```bash
-   docker compose up -d
+   docker network create symbiota-network
    ```
+
+   The compose file lives in the `docker/` subdirectory, **not** the repo root.
+   Running `docker compose up -d` from the repo root fails with
+   `no configuration file provided: not found`. Either `cd docker` first, or
+   point at the file explicitly:
+   ```bash
+   cd docker
+   docker compose up -d
+   # ...or from the repo root:
+   # docker compose -f docker/docker-compose.yaml up -d
+   ```
+
+   > Note: the obsolete top-level `version:` key has been removed from this compose
+   > file (finding C7), so modern Docker no longer prints a deprecation warning.
 
 ## Model Deployment
 
@@ -99,9 +143,45 @@ To implement actual model inference, modify the `/evaluate/{model_name}` endpoin
 
 ### With Docker
 
+Run from the `docker/` subdirectory (the compose file is not at the repo root),
+and make sure the external `symbiota-network` exists first (see
+[Setup Steps](#setup-steps)):
+
 ```bash
+docker network create symbiota-network   # one-time, if it does not exist yet
+cd docker
 docker compose up -d
 ```
+
+### Bridging onto the Symbiota app network
+
+Starting the service as above puts it on the external `symbiota-network`, but
+that is **not** the network the main Symbiota app stack runs on, so the web
+container still cannot reach it yet. When the `containers/` stack comes up, its
+Compose project creates a project-prefixed network named
+**`containers_symbiota-network`** (the app compose declares the network with
+`driver: bridge` rather than `external` + an explicit `name:`, so Compose
+prepends the project name). This OCR service, by contrast, attaches to the
+plain external **`symbiota-network`**. They are two distinct networks, so the
+web container's lookup of `http://ocr_middleware:8000/` fails until the two are
+bridged.
+
+To make the running OCR container reachable from the web container, connect it
+onto the app's network and give it the `ocr_middleware` alias (the hostname the
+PHP integration hardcodes — see the [Integration with the Symbiota app](#integration-with-the-symbiota-app)
+section and the hostname gotcha above):
+
+```bash
+docker network connect --alias ocr_middleware containers_symbiota-network <ocr container>
+```
+
+Replace `<ocr container>` with the running container's name (e.g.
+`docker-ocr_middleware-1`); find it with `docker ps`. After this, the web
+container resolves `http://ocr_middleware:8000/` over the shared network.
+
+For the full end-to-end wiring of the three-container stack (app + DB + OCR),
+including where this bridging step fits, see step 7 of the main containers
+spine doc (`se-symbiota/containers/README.md`).
 
 ### Locally (Development)
 
@@ -114,9 +194,11 @@ uvicorn main:app --reload
 
 Access FastAPI docs at: http://localhost:8000/docs
 
-Try the mock endpoint:
+Try the mock endpoint. The `url` query parameter is **required** (the endpoint
+`POST /evaluate/mock/{id}` declares `url: str = Query(...)` in `main.py`), so
+omitting it returns `HTTP 422 Unprocessable Entity`. Pass any URL value:
 ```bash
-curl -X POST "http://localhost:8000/evaluate/mock/1"
+curl -X POST "http://localhost:8000/evaluate/mock/1?url=http://example.com/x.jpg"
 ```
 
 ## Development Notes

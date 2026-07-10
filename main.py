@@ -7,6 +7,8 @@ from pydantic_settings import BaseSettings
 import aiofiles
 import httpx
 
+from confidence import to_envelope, synthesize_confidence
+
 class Settings(BaseSettings):
     """Configuration loaded from environment variables"""
     model_config = ConfigDict(
@@ -84,23 +86,36 @@ async def output(id: int, url: str = Query(...)):
         contents = await f.read()
         data = json.loads(contents)
 
-    return data
+    # Synthesize a plausible per-field confidence map so the front-end can be
+    # developed against realistic data, then return the standard envelope.
+    if isinstance(data, dict) and "_confidence" not in data:
+        data = dict(data)
+        data["_confidence"] = synthesize_confidence(data)
+    return to_envelope(data, model="mock")
 
 @app.post("/evaluate/azure")
 async def evaluate(url: str = Query(...)):
-    target_url = f"{settings.azure_route}?url={url}"
-    print("Target url:", target_url)
-    # Ascync calls ocr service
+    # Pass the image URL as a properly-encoded query param. Never string-concat
+    # `?url=` onto azure_route: the route may itself carry query params (e.g. an
+    # API key), and a raw caller-supplied url could smuggle extra params.
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(target_url)
+        async with httpx.AsyncClient(timeout=30.0) as client:  # ponytail: 30s covers typical DI analyze latency; raise if models get slower
+            response = await client.post(settings.azure_route, params={"url": url})
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error calling OCR service: {str(e)}")
+        # Log server-side only; the exception text can embed the upstream URL
+        # (which may contain a key), so never return it to the caller.
+        print(f"Error calling OCR service: {e}")
+        raise HTTPException(status_code=502, detail="Upstream OCR service unavailable")
 
     if response.status_code != 200:
         raise HTTPException(status_code=response.status_code, detail="OCR service returned an error")
 
-    return response.json()
+    try:
+        payload = response.json()
+    except ValueError:
+        # 200 with an empty/truncated body (proxy hiccup) — don't leak a 500.
+        raise HTTPException(status_code=502, detail="OCR service returned a malformed response")
+    return to_envelope(payload, model="azure")
 @app.post("/evaluate/{model_name}")
 async def evaluate_with_model(model_name: str, url: str = Query(...)):
     """Evaluate with a specific model (future implementation)"""
