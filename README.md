@@ -1,15 +1,23 @@
 # herbaria-ocr-server
 
-A middleware service for running AI Optical Character Recognition (OCR) inferences on images from the herbaria portal. This is a FastAPI application that can delegate to various OCR backends (mock, Azure, or local models).
+A middleware service for running AI Optical Character Recognition (OCR) inferences on images from the herbaria portal. This is a FastAPI application that proxies to OCR backends (mock or Azure) and normalizes their responses.
 
 ## Architecture
 
-This service acts as a unified interface for OCR operations:
-- **Mock endpoint**: For testing with sample data
-- **Azure endpoint**: Delegates to Azure OCR service  
-- **Model endpoints**: Extensible framework for local ML models (from `/app/models`)
+This service is a **proxy and response normalizer** — no OCR model runs
+in-process here. Each endpoint forwards to an upstream OCR provider, then
+reshapes the reply into the flat DWC + `_confidence` envelope defined in
+`CONFIDENCE_CONTRACT.md`:
 
-Models are discovered dynamically at startup from the mounted models directory, making it easy to add/update models without restarting.
+- **Mock endpoint** (`/evaluate/mock/{id}`): reads canned sample responses
+  from `test_data/` for testing without a live OCR call.
+- **Azure endpoint** (`/evaluate/azure`): forwards to the upstream OCR service
+  configured via `AZURE_ROUTE` (currently `BU-Spark/spark-symbiota-ml`) and
+  normalizes its response.
+
+This repo owns the portal-facing envelope, the mock route, confidence
+sanitizing, and upstream-credential leak prevention; the ML repo owns the OCR
+pipelines and their dependency tree.
 
 ### Integration with the Symbiota app
 
@@ -39,11 +47,9 @@ FastAPI interactive docs are accessible at `http://localhost:8000/docs` by defau
 
 ### Available Endpoints
 
-- `GET /` - Service info and available models
-- `GET /models` - List all available models
+- `GET /` - Service info and available endpoints
 - `POST /evaluate/mock/{id}` - Mock evaluation (test data)
 - `POST /evaluate/azure?url=...` - Azure OCR service
-- `POST /evaluate/{model_name}?url=...` - Local model evaluation (future implementation)
 
 ## Configuration
 
@@ -53,12 +59,10 @@ Configuration is managed via environment variables loaded from `.env` file. The 
 
 - `APP_NAME` - Service display name
 - `DISPLAY_NAME` - API display name
-- `MODEL_NAME` - Default model name for identification
 - `SERVER_VERSION` - Server version string
 - `API_VERSION` - API version string
 - `HOST` - Bind host (default: `0.0.0.0`)
 - `PORT` - Bind port (default: `8000`)
-- `MODEL_PATH` - Path to models directory (default: `/app/models`)
 - `AZURE_ROUTE` - Azure OCR endpoint URL (optional)
 
 ### Setup Steps
@@ -75,7 +79,6 @@ Configuration is managed via environment variables loaded from `.env` file. The 
 2. Edit `.env` with your settings:
    ```env
    APP_NAME=My OCR Service
-   MODEL_PATH=/app/models
    AZURE_ROUTE=https://your-azure-endpoint.com/ocr
    ```
 
@@ -101,43 +104,6 @@ Configuration is managed via environment variables loaded from `.env` file. The 
 
    > Note: the obsolete top-level `version:` key has been removed from this compose
    > file (finding C7), so modern Docker no longer prints a deprecation warning.
-
-## Model Deployment
-
-### Directory Structure
-
-Models should be organized in subdirectories under `MODEL_PATH`:
-
-```
-/app/models/
-  ├── model-1/
-  │   ├── model.pkl
-  │   ├── config.json
-  │   └── inference.py
-  └── model-2/
-      ├── model.pkl
-      ├── config.json
-      └── inference.py
-```
-
-### Adding Models
-
-Models are discovered automatically at startup. Each model subdirectory is addressable via:
-```
-POST /evaluate/{model_name}?url=...
-```
-
-Example:
-```bash
-curl -X POST "http://localhost:8000/evaluate/model-1?url=https://example.com/image.jpg"
-```
-
-### Local Model Implementation
-
-To implement actual model inference, modify the `/evaluate/{model_name}` endpoint in `main.py` to:
-1. Load model from `available_models[model_name]["path"]`
-2. Run inference on the image URL
-3. Return results
 
 ## Running the Middleware
 
@@ -204,6 +170,5 @@ curl -X POST "http://localhost:8000/evaluate/mock/1?url=http://example.com/x.jpg
 ## Development Notes
 
 - Configuration uses `pydantic_settings` with automatic `.env` loading
-- Models are discovered dynamically on startup by scanning `MODEL_PATH`
 - All endpoints return JSON responses
 - Async/await pattern throughout for efficient concurrency
