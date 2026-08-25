@@ -223,3 +223,25 @@ def test_missing_azure_route_is_503_not_a_misleading_502(monkeypatch):
     assert r.status_code == 503, "missing config must not masquerade as an upstream outage"
     assert "AZURE_ROUTE" in r.json()["detail"]
     assert not called, "no upstream call should be attempted with no route configured"
+
+
+# --- regressions found in review of the first version of this change ---------------
+def test_multi_valued_dwc_field_is_not_rejected(monkeypatch):
+    """A list of scalars is a legitimate multi-valued DWC field and used to pass
+    through _from_flat. Rejecting every non-scalar turned a working 200 into a 502."""
+    _patch_upstream(monkeypatch, response=_Resp(payload={
+        "scientificName": "Acer rubrum",
+        "associatedTaxa": ["Quercus rubra", "Pinus strobus"],
+    }))
+    r = client.post("/evaluate/azure", params={"url": IMG})
+    assert r.status_code == 200, r.text
+    assert r.json()["associatedTaxa"] == ["Quercus rubra", "Pinus strobus"]
+
+
+def test_nested_structure_is_still_rejected(monkeypatch):
+    """But genuine nested structure must still be caught, or medium 20 reopens."""
+    _patch_upstream(monkeypatch, response=_Resp(payload={
+        "pages": [{"pageNumber": 1, "words": []}],
+    }))
+    r = client.post("/evaluate/azure", params={"url": IMG})
+    assert r.status_code == 502, r.text

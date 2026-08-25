@@ -177,8 +177,10 @@ def _looks_like_flat_dwc(raw: dict) -> bool:
       returns ``analyzeResult`` with ``pages`` and no ``documents``, and an
       in-flight or failed analyze returns ``status``/``error``. None of those are
       DWC field names.
-    * a non-scalar value -- a DWC field holds text or a number, never a dict or a
-      list, so a nested value means we are reading some other schema.
+    * a dict value, or a list containing dicts -- that is nested structure, i.e. some
+      other schema. A list of SCALARS is allowed: a multi-valued DWC field such as
+      ``associatedTaxa: ["Quercus", "Pinus"]`` is legitimate and used to pass
+      through, so rejecting every list would turn a working 200 into a 502.
 
     An empty dict counts as flat: "OCR found nothing" is a legitimate result, and
     the caller can tell it apart from an error by the absence of fields.
@@ -188,7 +190,12 @@ def _looks_like_flat_dwc(raw: dict) -> bool:
         return True
     if _AZURE_OPERATION_KEYS & fields.keys():
         return False
-    return all(not isinstance(v, (dict, list)) for v in fields.values())
+    for value in fields.values():
+        if isinstance(value, dict):
+            return False
+        if isinstance(value, list) and any(isinstance(v, (dict, list)) for v in value):
+            return False
+    return True
 
 
 def _is_azure_native(raw: dict) -> bool:

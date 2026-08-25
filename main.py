@@ -60,12 +60,11 @@ async def output(id: int, url: str = Query(...)):
     if isinstance(data, dict) and "_confidence" not in data:
         data = dict(data)
         data["_confidence"] = synthesize_confidence(data)
-    try:
-        return to_envelope(data, model="mock")
-    except UnrecognisedPayload as e:
-        # A fixture that is not a transcription. Surfacing it beats returning a 200
-        # whose "fields" are really some other schema's keys.
-        raise HTTPException(status_code=502, detail=f"Unrecognised OCR payload shape: {e}")
+    # No UnrecognisedPayload handler here on purpose: the block above injects
+    # _confidence, so to_envelope always takes its "already an envelope" branch and
+    # the shape check is never reached. An except clause here would be dead code that
+    # reads as protection.
+    return to_envelope(data, model="mock")
 
 @app.post("/evaluate/azure")
 async def evaluate(url: str = Query(...)):
