@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings
 import aiofiles
 import httpx
 
-from confidence import to_envelope, synthesize_confidence
+from confidence import UnrecognisedPayload, to_envelope, synthesize_confidence
 
 class Settings(BaseSettings):
     """Configuration loaded from environment variables"""
@@ -60,13 +60,30 @@ async def output(id: int, url: str = Query(...)):
     if isinstance(data, dict) and "_confidence" not in data:
         data = dict(data)
         data["_confidence"] = synthesize_confidence(data)
-    return to_envelope(data, model="mock")
+    try:
+        return to_envelope(data, model="mock")
+    except UnrecognisedPayload as e:
+        # A fixture that is not a transcription. Surfacing it beats returning a 200
+        # whose "fields" are really some other schema's keys.
+        raise HTTPException(status_code=502, detail=f"Unrecognised OCR payload shape: {e}")
 
 @app.post("/evaluate/azure")
 async def evaluate(url: str = Query(...)):
     # Pass the image URL as a properly-encoded query param. Never string-concat
     # `?url=` onto azure_route: the route may itself carry query params (e.g. an
     # API key), and a raw caller-supplied url could smuggle extra params.
+    # Distinguish "not configured" from "configured but unreachable". Both used to
+    # arrive as 502 "Upstream OCR service unavailable" -- httpx would fail on the
+    # empty default route and get swallowed by the except below, sending whoever was
+    # debugging off to check a service that was never called. Compose supplies
+    # AZURE_ROUTE via .env; if it is missing, that is a deployment error, not an
+    # upstream outage.
+    if not settings.azure_route:
+        raise HTTPException(
+            status_code=503,
+            detail="AZURE_ROUTE is not configured; this deployment cannot reach an OCR service",
+        )
+
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:  # ponytail: 30s covers typical DI analyze latency; raise if models get slower
             response = await client.post(settings.azure_route, params={"url": url})
@@ -84,4 +101,13 @@ async def evaluate(url: str = Query(...)):
     except ValueError:
         # 200 with an empty/truncated body (proxy hiccup) — don't leak a 500.
         raise HTTPException(status_code=502, detail="OCR service returned a malformed response")
-    return to_envelope(payload, model="azure")
+    try:
+        return to_envelope(payload, model="azure")
+    except UnrecognisedPayload as e:
+        # The upstream answered 200 with JSON we cannot read as a transcription --
+        # e.g. a prebuilt-read/layout result (analyzeResult.pages, no documents) or an
+        # in-flight {"status": ...} operation. Previously this fell through to the flat
+        # path, so every top-level key became a "DWC field": the portal got a 200,
+        # matched nothing, and reported success while filling in nothing at all.
+        print(f"Unrecognised OCR payload shape from upstream: {e}")
+        raise HTTPException(status_code=502, detail=f"Unrecognised OCR payload shape: {e}")

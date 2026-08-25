@@ -4,7 +4,20 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     ports:
-      - "8000:8000"
+      # Loopback only. This service has NO authentication and NO SSRF validation of
+      # its own -- both live in the PHP caller (externalocr.php requires a logged-in
+      # editor, derives the image URL server-side from imgid, and rejects hosts that
+      # resolve into private ranges). Published on 0.0.0.0 it was an open OCR proxy
+      # that bypassed every one of those checks. The deployed stack in
+      # se-symbiota-private publishes no ports at all and reaches this over the
+      # container network as http://ocr_middleware:8000; this binding exists only so
+      # a developer can curl it locally.
+      - "127.0.0.1:8000:8000"
+    # AZURE_ROUTE and friends come from the repo-root .env, stated explicitly rather
+    # than relying on whatever .env happened to be baked into the image. Without it
+    # /evaluate/azure has no upstream to call.
+    env_file:
+      - ../.env
     networks:
       - symbiota-network
 

@@ -13,6 +13,31 @@ SCHEMA_VERSION = 1
 # Reserved keys that are part of the envelope structure, not DWC field values.
 _RESERVED_KEYS = {"_confidence", "_meta"}
 
+# CONFIDENCE_CONTRACT.md: "_meta.model is "azure" or "mock"". An upstream response
+# may claim its own model, but only from this set -- otherwise a compromised or
+# simply misconfigured upstream could make a route report a provenance we never used.
+_KNOWN_MODELS = {"azure", "mock"}
+
+# Keys that belong to an Azure Document Intelligence *operation* wrapper rather than
+# to a transcription. Their presence means we are looking at a response shape this
+# middleware does not know how to read -- never at Darwin Core field names.
+_AZURE_OPERATION_KEYS = {
+    "analyzeResult",
+    "status",
+    "createdDateTime",
+    "lastUpdatedDateTime",
+    "error",
+}
+
+
+class UnrecognisedPayload(ValueError):
+    """A payload matching none of the shapes to_envelope knows how to read.
+
+    Raised rather than guessed at, because the alternative is worse: treating an
+    unknown shape as flat Darwin Core produces a 200 with plausible-looking
+    structure and no usable fields, so OCR silently "succeeds" and fills nothing.
+    """
+
 
 def _clamp_confidence(value: Any):
     """Return a float clamped to [0.0, 1.0], or None if not a usable number.
@@ -118,9 +143,19 @@ def _from_envelope(raw: dict, model: str) -> dict:
     # incoming envelope's _meta never pass through into our output.
     raw_meta = raw.get("_meta")
     raw_meta = raw_meta if isinstance(raw_meta, dict) else {}
+
+    # Values, not just keys, are validated. Previously both were copied verbatim, so
+    # an upstream response could set model to anything and schema_version to any type
+    # -- a route reporting a provenance it never used, and a schema_version that the
+    # contract promises is the integer 1.
+    raw_model = raw_meta.get("model")
+    claimed_model = raw_model if raw_model in _KNOWN_MODELS else model
+
     out["_meta"] = {
-        "model": raw_meta.get("model", model),
-        "schema_version": raw_meta.get("schema_version", SCHEMA_VERSION),
+        "model": claimed_model,
+        # Always ours: this envelope is schema 1 because THIS code built it. Relaying
+        # an upstream value could only break the guarantee the contract makes.
+        "schema_version": SCHEMA_VERSION,
     }
     return out
 
@@ -131,6 +166,29 @@ def _from_flat(raw: dict, model: str) -> dict:
     out["_confidence"] = {}
     out["_meta"] = {"model": model, "schema_version": SCHEMA_VERSION}
     return out
+
+
+def _looks_like_flat_dwc(raw: dict) -> bool:
+    """Is this plausibly a flat ``{dwc_field: scalar}`` transcription?
+
+    Two things disqualify it, and both are shapes we have actually seen or expect:
+
+    * an Azure operation wrapper key -- ``prebuilt-read``/``prebuilt-layout``
+      returns ``analyzeResult`` with ``pages`` and no ``documents``, and an
+      in-flight or failed analyze returns ``status``/``error``. None of those are
+      DWC field names.
+    * a non-scalar value -- a DWC field holds text or a number, never a dict or a
+      list, so a nested value means we are reading some other schema.
+
+    An empty dict counts as flat: "OCR found nothing" is a legitimate result, and
+    the caller can tell it apart from an error by the absence of fields.
+    """
+    fields = {k: v for k, v in raw.items() if k not in _RESERVED_KEYS}
+    if not fields:
+        return True
+    if _AZURE_OPERATION_KEYS & fields.keys():
+        return False
+    return all(not isinstance(v, (dict, list)) for v in fields.values())
 
 
 def _is_azure_native(raw: dict) -> bool:
@@ -164,6 +222,10 @@ def to_envelope(raw: Any, model: str) -> dict:
         return _from_azure_native(raw, model)
     if "_confidence" in raw:
         return _from_envelope(raw, model)
+    if not _looks_like_flat_dwc(raw):
+        raise UnrecognisedPayload(
+            "payload is neither Azure-native, an envelope, nor a flat Darwin Core dict"
+        )
     return _from_flat(raw, model)
 
 
